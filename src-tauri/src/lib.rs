@@ -47,6 +47,7 @@ pub fn run() {
             interceptor_commands::interceptor_status,
             interceptor_commands::get_captured_request,
             interceptor_commands::captured_request_count,
+            interceptor_commands::replay_request,
         ])
         .setup(|app| {
             // Surface the resolved app-data dir where a vendored cloudflared may live.

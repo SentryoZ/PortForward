@@ -161,7 +161,7 @@ impl Interceptor {
 
 /// Hop-by-hop / connection-management headers that must not be blindly copied
 /// between the inbound connection and the upstream connection.
-fn is_hop_by_hop(name: &str) -> bool {
+pub(crate) fn is_hop_by_hop(name: &str) -> bool {
     matches!(
         name,
         "host"

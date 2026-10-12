@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use interceptor_core::{
-    CapturedRequest, CapturedRequestJson, Interceptor, InterceptorInfo, ProxyError, RequestStore,
-    StoreError,
+    replay, CapturedRequest, CapturedRequestJson, Interceptor, InterceptorInfo, ProxyError,
+    ReplayError, RequestStore, ResponsePayload, StoreError,
 };
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
@@ -56,6 +56,19 @@ impl From<ProxyError> for InterceptorCommandError {
 impl From<StoreError> for InterceptorCommandError {
     fn from(err: StoreError) -> Self {
         Self::new("store_failed", err.to_string())
+    }
+}
+
+impl From<ReplayError> for InterceptorCommandError {
+    fn from(err: ReplayError) -> Self {
+        let kind = match &err {
+            ReplayError::UnknownRequest(_) => "unknown_request",
+            ReplayError::InvalidMethod(_) => "invalid_method",
+            ReplayError::InvalidHeader(_) => "invalid_header",
+            ReplayError::Request(_) => "replay_failed",
+            ReplayError::Store(_) => "store_failed",
+        };
+        Self::new(kind, err.to_string())
     }
 }
 
@@ -175,4 +188,36 @@ pub async fn captured_request_count(
 ) -> Result<i64, InterceptorCommandError> {
     let store = store_for(&app, &state).await?;
     Ok(store.count().await?)
+}
+
+/// `replay_request(request_id)` — re-issue a captured request directly to the
+/// local target server (MAN-13).
+///
+/// The request is sent straight to `http://localhost:<target_port><path>` with
+/// the preserved method/headers/body, bypassing the interceptor proxy and the
+/// public tunnel. The target port comes from the running interceptor; if none is
+/// running the replay cannot know where to send the request and fails with the
+/// typed `not_running` error. An unknown id yields `unknown_request`.
+#[tauri::command]
+pub async fn replay_request(
+    state: State<'_, InterceptorState>,
+    request_id: String,
+) -> Result<ResponsePayload, InterceptorCommandError> {
+    let (store, target_port) = {
+        let guard = state.0.lock().expect("interceptor mutex poisoned");
+        match guard.as_ref() {
+            Some(running) => (
+                running.store.clone(),
+                running.interceptor.info().target_port,
+            ),
+            None => {
+                return Err(InterceptorCommandError::new(
+                    "not_running",
+                    "start the interceptor before replaying a captured request",
+                ))
+            }
+        }
+    };
+
+    Ok(replay(&store, &request_id, target_port).await?)
 }

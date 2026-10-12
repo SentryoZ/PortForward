@@ -7,7 +7,9 @@
 //!   that forwards requests to the user's target port, captures them and
 //!   returns the upstream response unaltered;
 //! * [`store::RequestStore`] — SQLite persistence for the captured records,
-//!   byte-exact for both UTF-8 and binary bodies.
+//!   byte-exact for both UTF-8 and binary bodies;
+//! * [`replay::replay`] — re-issue a captured request directly to the local
+//!   server, bypassing the proxy/tunnel (MAN-13).
 //!
 //! [`schema`] holds the MAN-10 §3 record types. The Tauri layer is a thin
 //! wrapper: it opens the store in the app-config dir, wires the emitter to
@@ -15,10 +17,12 @@
 //! `stop_interceptor` / `interceptor_status` commands.
 
 pub mod proxy;
+pub mod replay;
 pub mod schema;
 pub mod store;
 
 pub use proxy::{Emitter, Interceptor, InterceptorInfo, ProxyError};
+pub use replay::{replay, replay_url, replay_with_client, ReplayError, ResponsePayload};
 pub use schema::{
     is_iso8601_utc, is_uuid, CapturedRequest, CapturedRequestJson, CapturedResponse, ResponseJson,
 };

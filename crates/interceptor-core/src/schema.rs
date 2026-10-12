@@ -28,7 +28,7 @@ fn is_utf8(enc: &str) -> bool {
 }
 
 /// Encode raw bytes as `(encoding, value)` for the JSON wire format.
-fn encode_body(bytes: &[u8]) -> (&'static str, String) {
+pub(crate) fn encode_body(bytes: &[u8]) -> (&'static str, String) {
     match std::str::from_utf8(bytes) {
         Ok(text) => (BODY_ENCODING_UTF8, text.to_string()),
         Err(_) => (BODY_ENCODING_BASE64, BASE64.encode(bytes)),
@@ -36,7 +36,7 @@ fn encode_body(bytes: &[u8]) -> (&'static str, String) {
 }
 
 /// Decode a wire `(encoding, value)` pair back to raw bytes.
-fn decode_body(encoding: &str, value: &str) -> Vec<u8> {
+pub(crate) fn decode_body(encoding: &str, value: &str) -> Vec<u8> {
     if encoding == BODY_ENCODING_BASE64 {
         BASE64
             .decode(value)

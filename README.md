@@ -5,9 +5,10 @@ tunnel**, intercepts the incoming webhooks, and lets you replay them. Tauri v2
 (Rust core + React/TypeScript frontend + Tailwind CSS).
 
 This repository is **MAN-11 (MVP step 1)** — the app shell plus the cloudflared
-tunnel lifecycle — and **MAN-12 (MVP step 2)** — the local request interceptor
-proxy, capture persistence and `webhook-received` events. Replay (MAN-13) and
-the full request-list/detail UI (MAN-14) build on top of it.
+tunnel lifecycle — **MAN-12 (MVP step 2)** — the local request interceptor
+proxy, capture persistence and `webhook-received` events — and **MAN-13 (MVP
+step 3)** — the replay engine that re-sends a captured request straight to the
+local server. The full request-list/detail UI (MAN-14) builds on top of it.
 
 ## Layout
 
@@ -20,9 +21,11 @@ port-forward/
 ├── crates/interceptor-core/     # Local proxy + capture store (no GUI deps)
 │   ├── src/proxy.rs             # axum proxy: forward, capture, persist, emit
 │   ├── src/store.rs             # SQLite RequestStore (TEXT for UTF-8, BLOB for binary)
+│   ├── src/replay.rs            # replay engine: re-send a capture to the local server
 │   ├── src/schema.rs            # MAN-10 §3 CapturedRequest types + wire projection
 │   ├── migrations/0001_init.sql # canonical `requests` schema (shared with tauri-plugin-sql)
 │   ├── examples/intercept_curl.rs # curl-based evidence harness (all DoD checks)
+│   ├── examples/replay_curl.rs  # replay evidence harness (local server log + replay output)
 │   └── tests/interceptor_e2e.rs # proxy ↔ store ↔ emit integration test
 ├── src-tauri/                   # Tauri v2 app (thin wrapper over the two crates)
 │   ├── src/lib.rs               # Builder: plugins, managed state, command registration
@@ -113,9 +116,38 @@ In the app the same core is wired through Tauri commands:
 | `interceptor_status()` | running proxy info, or `null` |
 | `get_captured_request(id)` | fetch a stored record by uuid |
 | `captured_request_count()` | number of stored records |
+| `replay_request(id)` | re-send a stored request straight to `localhost:<target_port>` → `ResponsePayload` |
 
 Each captured request also fires `emit("webhook-received", payload)` exactly
 once, which the shell UI listens to.
+
+## Verify the replay engine (MAN-13, no GUI required)
+
+`interceptor-core::replay` is GUI-free too. It loads a stored record and
+re-issues it with `reqwest` **directly** to `http://localhost:<target_port><path>`
+— same method, path, query, body (byte-exact) and end-to-end headers — bypassing
+the proxy and the public tunnel. A replay is *not* captured: it creates no new
+record and no new `webhook-received` event. Hop-by-hop headers (`host`,
+`content-length`, `connection`, …) are dropped because the local client
+re-derives them, exactly as the proxy does when it forwards the first time.
+
+```bash
+cargo test -p interceptor-core                       # unit + loopback integration tests
+cargo run -p interceptor-core --example replay_curl -- /tmp/replay-evidence
+```
+
+`replay_curl` starts a local server that logs every request it receives, sends a
+request through the real proxy, then replays the stored record directly to the
+local server. It prints the replay invocation, the returned `status` /
+`latency_ms`, the **local server log** (showing the identical method/path/body on
+replay) and a typed-error check for an unknown id, then `RESULT: PASS` only if
+every MAN-13 Definition-of-Done check holds. Artifacts: `portforward.db`,
+`origin-requests.jsonl` (the local server log), `replay-output.json`.
+
+The Tauri command wraps the same core. `replay_request(id)` resolves the target
+port from the running interceptor (there is no replay without a target), so an
+unknown id yields `unknown_request` and a stopped interceptor yields
+`not_running`; both are typed `{ kind, message }` errors.
 
 ## Data model
 
