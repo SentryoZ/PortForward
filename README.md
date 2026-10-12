@@ -4,9 +4,10 @@ A lightweight desktop app that exposes a local port through a **cloudflared quic
 tunnel**, intercepts the incoming webhooks, and lets you replay them. Tauri v2
 (Rust core + React/TypeScript frontend + Tailwind CSS).
 
-This repository is **MAN-11 (MVP step 1)**: the app shell plus the cloudflared
-tunnel lifecycle. Proxy/interceptor (MAN-12), replay (MAN-13) and full UI
-(MAN-14) build on top of it.
+This repository is **MAN-11 (MVP step 1)** — the app shell plus the cloudflared
+tunnel lifecycle — and **MAN-12 (MVP step 2)** — the local request interceptor
+proxy, capture persistence and `webhook-received` events. Replay (MAN-13) and
+the full request-list/detail UI (MAN-14) build on top of it.
 
 ## Layout
 
@@ -16,11 +17,18 @@ port-forward/
 │   ├── src/lib.rs               # TunnelManager, typed TunnelError, URL parsing
 │   ├── examples/lifecycle.rs    # End-to-end evidence harness (start → url → stop)
 │   └── tests/tunnel_e2e.rs      # Gated integration test against the real binary
-├── src-tauri/                   # Tauri v2 app (thin wrapper over tunnel-core)
+├── crates/interceptor-core/     # Local proxy + capture store (no GUI deps)
+│   ├── src/proxy.rs             # axum proxy: forward, capture, persist, emit
+│   ├── src/store.rs             # SQLite RequestStore (TEXT for UTF-8, BLOB for binary)
+│   ├── src/schema.rs            # MAN-10 §3 CapturedRequest types + wire projection
+│   ├── migrations/0001_init.sql # canonical `requests` schema (shared with tauri-plugin-sql)
+│   ├── examples/intercept_curl.rs # curl-based evidence harness (all DoD checks)
+│   └── tests/interceptor_e2e.rs # proxy ↔ store ↔ emit integration test
+├── src-tauri/                   # Tauri v2 app (thin wrapper over the two crates)
 │   ├── src/lib.rs               # Builder: plugins, managed state, command registration
 │   ├── src/main.rs              # Binary entry point
 │   ├── src/tunnel_commands.rs   # #[tauri::command] start_tunnel / stop_tunnel / tunnel_status
-│   ├── migrations/0001_init.sql # `requests` table (MAN-10 §3 schema)
+│   ├── src/interceptor_commands.rs # #[tauri::command] start_interceptor / stop_interceptor / …
 │   ├── capabilities/default.json
 │   └── tauri.conf.json
 ├── src/                         # React + TypeScript + Tailwind frontend
@@ -63,18 +71,57 @@ a headless environment:
 
 ```bash
 cargo test -p tunnel-core                                   # 5 unit tests
+cargo test -p port-forward --test tauri_commands            # command contract (headless, no network)
 CLOUDFLARED_BIN=$(command -v cloudflared) \
   cargo run -p tunnel-core --example lifecycle 3000         # live URL + no orphan
 TUNNEL_E2E=1 CLOUDFLARED_BIN=$(command -v cloudflared) \
-  cargo test -p tunnel-core -- --ignored                    # real binary e2e
+  cargo test -p tunnel-core -- --ignored                    # real binary e2e (library)
+TUNNEL_E2E=1 cargo test -p port-forward --test tauri_commands -- --ignored   # real binary e2e (commands)
 ```
 
 The example prints `pgrep -x cloudflared` **before / during / after**
 `stop_tunnel()` plus the public URL — the evidence asked for in MAN-11.
 
+`src-tauri/tests/tauri_commands.rs` drives the **registered `#[tauri::command]`
+handlers** through Tauri's own IPC dispatcher on a mock runtime, so the
+`start_tunnel` → `TunnelInfo` → `stop_tunnel` contract (and the typed
+`binary_not_found` / `not_running` errors) is verified without a window server.
+
+## Verify the interceptor (MAN-12, no GUI required)
+
+`interceptor-core` is GUI-free too, so the whole forward → capture → persist →
+emit path is provable headlessly:
+
+```bash
+cargo test -p interceptor-core                       # unit + loopback integration tests
+cargo run -p interceptor-core --example intercept_curl -- /tmp/interceptor-evidence
+```
+
+`intercept_curl` starts a local origin and the real proxy, drives it with real
+`curl` calls (JSON, non-JSON form, a 418 passthrough and a 0x00–0xFF binary
+body), then dumps the SQLite store with `sqlite3` and prints the captured
+`webhook-received` event log. It ends with `RESULT: PASS` only if every MAN-12
+Definition-of-Done check holds. Artifacts: `portforward.db`,
+`webhook-events.jsonl`, `binary-payload.bin`.
+
+In the app the same core is wired through Tauri commands:
+
+| command | purpose |
+| --- | --- |
+| `start_interceptor(target_port)` | bind a free `127.0.0.1:<port>` proxy → `InterceptorInfo` |
+| `stop_interceptor()` | shut the proxy down |
+| `interceptor_status()` | running proxy info, or `null` |
+| `get_captured_request(id)` | fetch a stored record by uuid |
+| `captured_request_count()` | number of stored records |
+
+Each captured request also fires `emit("webhook-received", payload)` exactly
+once, which the shell UI listens to.
+
 ## Data model
 
-`requests` (see `src-tauri/migrations/0001_init.sql`), matching MAN-10 §3:
+`requests` (canonical SQL in `crates/interceptor-core/migrations/0001_init.sql`,
+embedded by both `interceptor-core` and the `tauri-plugin-sql` migration),
+matching MAN-10 §3:
 
 | column | notes |
 | --- | --- |
@@ -86,6 +133,11 @@ The example prints `pgrep -x cloudflared` **before / during / after**
 | `response_json` | original nested response object |
 
 Indexes: `timestamp DESC`, `method`, `path`.
+
+`body` / `response_body` are byte-exact: UTF-8 payloads are stored as TEXT,
+non-UTF-8 (binary) payloads as BLOBs. The emitted `webhook-received` payload
+keeps the §3 shape — `body` is the decoded string, and for binary payloads an
+extra `body_encoding: "base64"` marks the base64 encoding so nothing is lost.
 
 ## Headless / deps-less environments
 

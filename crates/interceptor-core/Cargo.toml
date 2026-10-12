@@ -1,0 +1,26 @@
+[package]
+name = "interceptor-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local HTTP interceptor proxy + SQLite capture store for Port Forward. No Tauri/GUI dependencies so it is unit- and integration-testable headlessly."
+
+[lib]
+name = "interceptor_core"
+path = "src/lib.rs"
+
+[dependencies]
+axum = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

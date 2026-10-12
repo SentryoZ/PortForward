@@ -1,9 +1,18 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import Database from "@tauri-apps/plugin-sql";
 
 type TunnelInfo = { public_url: string; pid: number; local_port: number };
 type TunnelCommandError = { kind: string; message: string };
+type InterceptorInfo = { proxy_port: number; proxy_url: string; target_port: number };
+type CapturedRequestJson = {
+  id: string;
+  timestamp: string;
+  method: string;
+  path: string;
+  response: { status: number; latency_ms: number };
+};
 
 const DB_URL = "sqlite:portforward.db";
 
@@ -17,6 +26,8 @@ export default function App() {
   const [error, setError] = useState<TunnelCommandError | null>(null);
   const [busy, setBusy] = useState(false);
   const [dbStatus, setDbStatus] = useState<string>("connecting…");
+  const [interceptor, setInterceptor] = useState<InterceptorInfo | null>(null);
+  const [events, setEvents] = useState<CapturedRequestJson[]>([]);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -26,6 +37,15 @@ export default function App() {
     invoke<TunnelInfo | null>("tunnel_status")
       .then(setTunnel)
       .catch(() => undefined);
+
+    invoke<InterceptorInfo | null>("interceptor_status")
+      .then(setInterceptor)
+      .catch(() => undefined);
+
+    // Live `webhook-received` events from the interceptor proxy (MAN-12).
+    const unlisten = listen<CapturedRequestJson>("webhook-received", (event) => {
+      setEvents((prev) => [event.payload, ...prev].slice(0, 50));
+    });
 
     // Load the SQLite store; this applies the `requests` migration on first run.
     (async () => {
@@ -37,7 +57,30 @@ export default function App() {
         setDbStatus(`sqlite error: ${String(e)}`);
       }
     })();
+
+    return () => {
+      unlisten.then((off) => off()).catch(() => undefined);
+    };
   }, []);
+
+  async function startInterceptor() {
+    setError(null);
+    try {
+      setInterceptor(await invoke<InterceptorInfo>("start_interceptor", { targetPort: port }));
+    } catch (e) {
+      setError(e as TunnelCommandError);
+    }
+  }
+
+  async function stopInterceptor() {
+    setError(null);
+    try {
+      await invoke("stop_interceptor");
+      setInterceptor(null);
+    } catch (e) {
+      setError(e as TunnelCommandError);
+    }
+  }
 
   async function start() {
     setBusy(true);
@@ -113,6 +156,55 @@ export default function App() {
           </div>
         </section>
       )}
+
+      <section className="flex items-end gap-3">
+        <button
+          className="rounded bg-sky-600 px-4 py-2 font-medium disabled:opacity-50"
+          onClick={startInterceptor}
+          disabled={!!interceptor}
+        >
+          Start interceptor
+        </button>
+        <button
+          className="rounded bg-slate-600 px-4 py-2 font-medium disabled:opacity-50"
+          onClick={stopInterceptor}
+          disabled={!interceptor}
+        >
+          Stop interceptor
+        </button>
+        {interceptor && (
+          <span className="text-xs text-slate-400" data-testid="proxy-url">
+            proxy {interceptor.proxy_url} → localhost:{interceptor.target_port}
+          </span>
+        )}
+      </section>
+
+      <section className="rounded border border-slate-700 bg-slate-900/60 p-4">
+        <div className="flex items-baseline justify-between">
+          <div className="text-xs uppercase tracking-wide text-slate-400">
+            webhook-received (live)
+          </div>
+          <div className="text-xs text-slate-400" data-testid="event-count">
+            {events.length} event{events.length === 1 ? "" : "s"}
+          </div>
+        </div>
+        {events.length === 0 ? (
+          <p className="mt-2 text-xs text-slate-500">
+            Waiting for a request through the interceptor proxy…
+          </p>
+        ) : (
+          <ul className="mt-2 flex flex-col gap-1 font-mono text-xs">
+            {events.map((event) => (
+              <li key={event.id} data-testid="event-row">
+                <span className="text-slate-500">{event.timestamp}</span>{" "}
+                <span className="text-emerald-400">{event.method}</span> {event.path}{" "}
+                <span className="text-sky-400">{event.response.status}</span>{" "}
+                <span className="text-slate-500">{event.response.latency_ms}ms</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {error && (
         <section className="rounded border border-rose-700 bg-rose-950/50 p-4 text-sm">
