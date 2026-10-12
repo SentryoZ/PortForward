@@ -6,9 +6,10 @@ tunnel**, intercepts the incoming webhooks, and lets you replay them. Tauri v2
 
 This repository is **MAN-11 (MVP step 1)** — the app shell plus the cloudflared
 tunnel lifecycle — **MAN-12 (MVP step 2)** — the local request interceptor
-proxy, capture persistence and `webhook-received` events — and **MAN-13 (MVP
+proxy, capture persistence and `webhook-received` events — **MAN-13 (MVP
 step 3)** — the replay engine that re-sends a captured request straight to the
-local server. The full request-list/detail UI (MAN-14) builds on top of it.
+local server — and **MAN-14 (MVP step 4)** — the frontend UI: sidebar, live
+request list, detail panel and replay.
 
 ## Layout
 
@@ -35,7 +36,14 @@ port-forward/
 │   ├── capabilities/default.json
 │   └── tauri.conf.json
 ├── src/                         # React + TypeScript + Tailwind frontend
-└── scripts/                     # install-system-deps.sh, install-cloudflared.sh, dev-deps-shim.sh
+│   ├── App.tsx                  # layout: sidebar | request list | detail panel
+│   ├── components/              # Sidebar, RequestList, DetailPanel, JsonTree, HeadersTable
+│   ├── lib/                     # bridge (Tauri ⇄ simulator), format helpers
+│   └── types.ts                 # wire types shared with the Rust commands
+├── evidence/                    # headless UI evidence harness (MAN-14)
+│   ├── index.html / main.tsx    # boots App against the deterministic SimBridge
+│   └── out/                     # generated screenshots + latency JSON (gitignored)
+└── scripts/                     # install-system-deps.sh, install-cloudflared.sh, dev-deps-shim.sh, ui-evidence.sh
 ```
 
 ## Prerequisites
@@ -148,6 +156,45 @@ The Tauri command wraps the same core. `replay_request(id)` resolves the target
 port from the running interceptor (there is no replay without a target), so an
 unknown id yields `unknown_request` and a stopped interceptor yields
 `not_running`; both are typed `{ kind, message }` errors.
+
+## Verify the UI (MAN-14, no GUI required)
+
+The frontend depends only on a small `Bridge` interface (`src/lib/bridge.ts`), so
+the **same component tree** runs against the real Tauri runtime
+(`src/lib/tauriBridge.ts`) and against a deterministic in-memory simulator
+(`src/lib/simBridge.ts`). The simulator replays the exact command/event contract
+(`webhook-received`, `start_interceptor`, `start_tunnel`, `replay_request`, …)
+with representative payloads — nested JSON, a non-JSON form body and a binary
+(base64) body — so the UI can be driven and captured headlessly.
+
+```bash
+npm run build          # tsc --noEmit && vite build
+npm run evidence       # needs a Chrome CDP instance (see scripts/ui-evidence.sh)
+scripts/ui-evidence.sh # boots vite + headless Chrome, writes evidence/out/
+```
+
+`scripts/ui-evidence.sh` starts the Vite dev server and a headless Chrome, then
+`scripts/ui-evidence.mjs` drives the scenarios over the **DevTools Protocol** and
+writes to `evidence/out/`:
+
+| scenario | what it proves |
+| --- | --- |
+| `01-list-detail-json` | list + detail panel, JSON tree, replay result (new status + latency) |
+| `02-copy-public-url` | Copy button writes the public URL to the clipboard |
+| `03-non-json-body` | a non-JSON body renders as raw text without crashing |
+| `04-binary-body` | a base64/binary body renders without crashing |
+| `05-live-latency` | 30 live `webhook-received` events, event→render latency |
+
+**Latency method:** the harness records `performance.now()` immediately before
+`SimBridge.emit()` and resolves via a `MutationObserver` when the row with that
+`data-request-id` is inserted into the DOM (real wall-clock time — the DevTools
+driver does not use Chrome's virtual time). `paintMs` additionally waits for the
+next animation frame. The 200 ms budget is applied to the max DOM time.
+
+The app layout is three columns: **sidebar** (capture toggle wired to
+start/stop, public URL + Copy, target local-port input) · **request list**
+(status/method/path/time/latency, newest first) · **detail panel** (JSON tree,
+headers/query tables, response, Replay Request).
 
 ## Data model
 
