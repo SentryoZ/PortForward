@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import Database from "@tauri-apps/plugin-sql";
 
 type TunnelInfo = { public_url: string; pid: number; local_port: number };
 type TunnelCommandError = { kind: string; message: string };
+
+const DB_URL = "sqlite:portforward.db";
 
 function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -13,12 +16,27 @@ export default function App() {
   const [tunnel, setTunnel] = useState<TunnelInfo | null>(null);
   const [error, setError] = useState<TunnelCommandError | null>(null);
   const [busy, setBusy] = useState(false);
+  const [dbStatus, setDbStatus] = useState<string>("connecting…");
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isTauri()) {
+      setDbStatus("not running inside Tauri");
+      return;
+    }
     invoke<TunnelInfo | null>("tunnel_status")
       .then(setTunnel)
       .catch(() => undefined);
+
+    // Load the SQLite store; this applies the `requests` migration on first run.
+    (async () => {
+      try {
+        const db = await Database.load(DB_URL);
+        const rows = await db.select<{ n: number }[]>("SELECT COUNT(*) AS n FROM requests");
+        setDbStatus(`sqlite ready — requests table OK (${rows[0]?.n ?? 0} rows)`);
+      } catch (e) {
+        setDbStatus(`sqlite error: ${String(e)}`);
+      }
+    })();
   }, []);
 
   async function start() {
@@ -55,6 +73,7 @@ export default function App() {
       <header>
         <h1 className="text-2xl font-semibold">Port Forward</h1>
         <p className="text-sm text-slate-400">Expose a local port through a cloudflared quick tunnel.</p>
+        <p className="mt-1 text-xs text-slate-500" data-testid="db-status">{dbStatus}</p>
       </header>
 
       <section className="flex items-end gap-3">
