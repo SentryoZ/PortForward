@@ -125,6 +125,16 @@ export class SimBridge implements Bridge {
   private listeners = new Set<Listener>();
   private tunnel: TunnelInfo | null = null;
   private interceptor: InterceptorInfo | null = null;
+  private publicUrl: string = SIM_PUBLIC_URL;
+
+  /**
+   * Override the public URL the simulated tunnel reports. The MAN-15
+   * acceptance run passes the *real* `trycloudflare.com` URL here so a
+   * screenshot shows the tunnel that actually served the request.
+   */
+  setPublicUrl(url: string): void {
+    if (url) this.publicUrl = url;
+  }
 
   /** Preload the store (returned by `listRequests`, newest first). */
   seed(count: number): CapturedRequestJson[] {
@@ -134,6 +144,18 @@ export class SimBridge implements Bridge {
       this.store.set(record.id, record);
       records.push(record);
     }
+    return records;
+  }
+
+  /**
+   * Preload *real* captures (e.g. `captured-requests.json` produced by the
+   * MAN-15 acceptance run, `cargo run -p interceptor-core --example mvp_e2e`).
+   * The records keep their real ids, timestamps, headers and bodies, so a
+   * screenshot taken over them shows an actual request that came through the
+   * public tunnel.
+   */
+  seedRecords(records: CapturedRequestJson[]): CapturedRequestJson[] {
+    for (const record of records) this.store.set(record.id, record);
     return records;
   }
 
@@ -160,7 +182,7 @@ export class SimBridge implements Bridge {
       }
       case "start_tunnel": {
         const localPort = Number(args?.localPort ?? PROXY_PORT);
-        this.tunnel = { public_url: SIM_PUBLIC_URL, pid: 4321, local_port: localPort };
+        this.tunnel = { public_url: this.publicUrl, pid: 4321, local_port: localPort };
         return this.tunnel as T;
       }
       case "stop_tunnel":

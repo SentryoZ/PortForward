@@ -9,7 +9,8 @@ tunnel lifecycle — **MAN-12 (MVP step 2)** — the local request interceptor
 proxy, capture persistence and `webhook-received` events — **MAN-13 (MVP
 step 3)** — the replay engine that re-sends a captured request straight to the
 local server — and **MAN-14 (MVP step 4)** — the frontend UI: sidebar, live
-request list, detail panel and replay.
+request list, detail panel and replay — and **MAN-15** — the one-command
+end-to-end acceptance run over the whole stack.
 
 ## Layout
 
@@ -27,6 +28,7 @@ port-forward/
 │   ├── migrations/0001_init.sql # canonical `requests` schema (shared with tauri-plugin-sql)
 │   ├── examples/intercept_curl.rs # curl-based evidence harness (all DoD checks)
 │   ├── examples/replay_curl.rs  # replay evidence harness (local server log + replay output)
+│   ├── examples/mvp_e2e.rs      # MAN-15 end-to-end acceptance: tunnel + proxy + replay
 │   └── tests/interceptor_e2e.rs # proxy ↔ store ↔ emit integration test
 ├── src-tauri/                   # Tauri v2 app (thin wrapper over the two crates)
 │   ├── src/lib.rs               # Builder: plugins, managed state, command registration
@@ -43,8 +45,61 @@ port-forward/
 ├── evidence/                    # headless UI evidence harness (MAN-14)
 │   ├── index.html / main.tsx    # boots App against the deterministic SimBridge
 │   └── out/                     # generated screenshots + latency JSON (gitignored)
-└── scripts/                     # install-system-deps.sh, install-cloudflared.sh, dev-deps-shim.sh, ui-evidence.sh
+└── scripts/                     # install-system-deps.sh, install-cloudflared.sh, dev-deps-shim.sh, ui-evidence.sh, test-server.mjs, mvp-acceptance.sh
 ```
+
+## Verify the whole MVP end to end (MAN-15, no GUI required)
+
+`interceptor-core`'s `mvp_e2e` example wires the two cores together and runs the
+complete MAN-10 §5 stack headlessly — `curl` → public HTTPS URL → interceptor
+proxy → local server, then a replay straight back to the local server:
+
+```bash
+scripts/mvp-acceptance.sh              # cold start → evidence/mvp + evidence/out
+scripts/mvp-acceptance.sh --no-ui      # skip the browser step
+```
+
+It does three things, in order:
+
+1. **boots the tiny test/echo server** on `127.0.0.1:3000`
+   (`scripts/test-server.mjs` — dependency-free `node:http`; logs every request
+   it receives as JSONL and echoes the request back as JSON);
+2. **runs the acceptance harness** (`cargo run -p interceptor-core --example
+   mvp_e2e`), which starts the interceptor proxy, starts a **real** `cloudflared`
+   quick tunnel onto the proxy port, `curl`s a `POST` to the assigned public
+   HTTPS URL, waits for the edge route, then verifies:
+   the capture is persisted with a byte-identical body, the upstream response
+   status/latency, the local server log (`2` webhook POSTs — forwarded + replay),
+   the replay going **directly** to `localhost:3000` with no new capture, and no
+   orphan `cloudflared` after `stop_tunnel()`;
+3. **runs the UI evidence harness** (`scripts/ui-evidence.sh`) over the *real*
+   captured payloads. `MVP_CAPTURES` adds two scenarios (`06-real-capture-replay`,
+   `07-real-capture-latency`) that seed the real `captured-requests.json`
+   (`?realCaptures=`) and show the real tunnel URL (`?publicUrl=`, read from the
+   sibling `public-url.txt`), then measure event→render latency against the
+   200 ms budget.
+
+```bash
+node scripts/test-server.mjs --port 3000 --log evidence/mvp/local-server.log &
+TARGET_PORT=3000 LOCAL_SERVER_LOG=evidence/mvp/local-server.log \
+  CLOUDFLARED_BIN=$(command -v cloudflared) \
+  cargo run -p interceptor-core --example mvp_e2e -- evidence/mvp
+
+# UI: real captures + real tunnel URL
+MVP_CAPTURES=/evidence/mvp/captured-requests.json scripts/ui-evidence.sh evidence/out
+```
+
+Artifacts (`evidence/mvp/`): `summary.json` (every check + observed values),
+`curl-transcript.txt`, `local-server.log`, `captured-requests.json` (MAN-10 §3
+wire shape), `webhook-events.jsonl`, `replay-output.json`, `public-url.txt`,
+`acceptance-run.log`. The UI step adds `evidence/out/06-*.png` and
+`07-*.png` + `summary.json` with the measured latency.
+
+> The "UI renders within 200 ms" check runs the real component tree in headless
+> Chrome (no window server), so the command layer is driven by the deterministic
+> `SimBridge` while the *payloads* and *public URL* come from the real run above.
+> Everything that reaches the network — tunnel, proxy, capture, emit, replay — is
+> the real Rust stack.
 
 ## Prerequisites
 

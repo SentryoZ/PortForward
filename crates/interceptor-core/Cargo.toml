@@ -24,3 +24,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# MAN-15: the acceptance harness drives the real interceptor *and* the real
+# cloudflared tunnel together, so it needs both cores.
+tunnel-core = { workspace = true }

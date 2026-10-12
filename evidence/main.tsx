@@ -13,6 +13,10 @@
  *   replay=1    click “Replay request” after selecting
  *   copy=1      click the public-URL “Copy” button
  *   latency=1   measure event→render latency for the emitted events
+ *   realCaptures=<url>
+ *               seed the *real* captures from a MAN-15 acceptance run
+ *               (`captured-requests.json`); with `latency=1` the measurement is
+ *               taken over those real payloads instead of synthetic ones
  */
 
 import { createRoot } from "react-dom/client";
@@ -40,7 +44,9 @@ type Evidence = {
     budgetMs: number;
     pass: boolean;
     method: string;
+    payloadSource: string;
   } | null;
+  realCaptures: { url: string; count: number; capturedAt: string | null } | null;
   nonJsonRendered: boolean;
   binaryRendered: boolean;
   errors: string[];
@@ -53,6 +59,8 @@ const selectIndex = params.get("select");
 const doReplay = params.get("replay") === "1";
 const doCopy = params.get("copy") === "1";
 const doLatency = params.get("latency") === "1";
+const realCapturesUrl = params.get("realCaptures");
+const realPublicUrl = params.get("publicUrl");
 const LATENCY_BUDGET_MS = 200;
 
 const bridge = new SimBridge();
@@ -66,15 +74,27 @@ const evidence: Evidence = {
     replay: doReplay,
     copy: doCopy,
     latency: doLatency,
+    realCaptures: realCapturesUrl,
+    realPublicUrl,
   },
   publicUrl: null,
   copy: null,
   replay: null,
   latency: null,
+  realCaptures: null,
   nonJsonRendered: false,
   binaryRendered: false,
   errors: [],
 };
+
+/** Fetch the real captures produced by the MAN-15 acceptance run. */
+async function loadRealCaptures(url: string): Promise<CapturedRequestJson[]> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`realCaptures ${url} -> HTTP ${res.status}`);
+  const data = (await res.json()) as unknown;
+  if (!Array.isArray(data)) throw new Error(`realCaptures ${url} is not a JSON array`);
+  return data as CapturedRequestJson[];
+}
 
 function waitFor(selector: string, timeoutMs = 5000): Promise<Element> {
   return new Promise((resolve, reject) => {
@@ -140,6 +160,25 @@ function round(n: number): number {
 }
 
 async function run(): Promise<void> {
+  // Real captures from the MAN-15 acceptance run (when provided) are seeded
+  // before the first render, so the list/detail panel show an actual request
+  // that arrived through the public tunnel.
+  let realRecords: CapturedRequestJson[] = [];
+  if (realPublicUrl) {
+    // Show the tunnel that actually served the captured request.
+    bridge.setPublicUrl(realPublicUrl);
+  }
+  if (realCapturesUrl) {
+    realRecords = await loadRealCaptures(realCapturesUrl);
+    bridge.seedRecords(realRecords);
+    const stamps = realRecords.map((r) => r.timestamp).sort();
+    evidence.realCaptures = {
+      url: realCapturesUrl,
+      count: realRecords.length,
+      capturedAt: stamps.length > 0 ? stamps[stamps.length - 1]! : null,
+    };
+  }
+
   const root = createRoot(document.getElementById("root") as HTMLElement);
   root.render(<App bridge={bridge} />);
 
@@ -175,16 +214,23 @@ async function run(): Promise<void> {
     };
   }
 
-  // Live traffic: emit `emitCount` events (and measure them when asked).
+  // Live traffic: measure real payloads when available, else synthetic ones;
+  // otherwise just emit `emitCount` synthetic events (no measurement).
   const samples: LatencySample[] = [];
-  if (emitCount > 0) {
+  const realPayloads = realRecords.length > 0;
+  if (doLatency) {
+    // Real captures are already rendered (seeded), so emit a clone with a fresh
+    // id to force a real DOM insertion of the *same* payload.
+    const live = realPayloads
+      ? realRecords.map((record) => ({ ...record, id: `${record.id}-live` }))
+      : Array.from({ length: Math.max(emitCount, 1) }, (_, i) => makeRecord(100 + i));
+    for (const record of live) {
+      samples.push(await measure(record));
+    }
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+  } else if (emitCount > 0) {
     for (let i = 0; i < emitCount; i += 1) {
-      const record = makeRecord(100 + i);
-      if (doLatency) {
-        samples.push(await measure(record));
-      } else {
-        bridge.emit(record);
-      }
+      bridge.emit(makeRecord(100 + i));
     }
     await new Promise((r) => requestAnimationFrame(() => r(null)));
   }
@@ -204,6 +250,9 @@ async function run(): Promise<void> {
       budgetMs: LATENCY_BUDGET_MS,
       pass: maxDom <= LATENCY_BUDGET_MS,
       method: "MutationObserver delta (performance.now()) from emit() to the row's DOM insertion; paintMs adds the next animation frame",
+      payloadSource: realPayloads
+        ? "real captured request(s) from the MAN-15 acceptance run (realCaptures)"
+        : "synthetic simulator record(s)",
     };
   }
 

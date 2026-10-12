@@ -4,6 +4,7 @@ node_modules/
 dist/
 .dev-shim/
 evidence/out/
+evidence/mvp/
 *.local
 src-tauri/gen/
 .env

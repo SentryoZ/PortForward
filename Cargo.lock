@@ -1772,6 +1772,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tunnel-core",
  "url",
  "uuid",
 ]
