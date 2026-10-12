@@ -1,0 +1,11 @@
+target/
+**/target/
+node_modules/
+dist/
+.dev-shim/
+*.local
+src-tauri/gen/
+.env
+.env.*
+!.env.example
+.DS_Store
